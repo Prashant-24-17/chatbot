@@ -13,7 +13,7 @@ for page in doc_img:
     doc_text.append(text)
     
     
-print(doc_text[20])
+
     
     
     
