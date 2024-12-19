@@ -1,78 +1,85 @@
-import pdf2image
-from PIL import Image
-import  pytesseract
-import ollama
+import chromadb 
+
+import ollama  #0.5.0
+
+import streamlit as st #1.35.0
 
 
-doc_img = pdf2image.convert_from_path(r"D:\nvidia_dataaset.pdf" , poppler_path=r"C:\Program Files (x86)\poppler-24.08.0\Library\bin")
-# doc_img[0].show()
+######################## Backend ##############################
+class AI():
+	def __init__(self):
+		db = chromadb.PersistentClient()
+		self.collection = db.get_or_create_collection("nvidia")
 
-doc_text = []
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+	def query(self, q, top=10):
+		res_db = self.collection.query(query_texts=[q])["documents"][0][0:top]
+		context = ' '.join(res_db).replace("\n", " ")
+		return context
 
-for page in doc_img:
-    text = pytesseract.image_to_string(page)
-    doc_text.append(text)
-    
-    
-title_map = {
-    "4-12":"Business",
-    "13-33":"Risk Factors",
-    "34-44":"Financials",
-    "45-46":"Directors",
-    "47-83":"Data"
-}
+	def respond(self, lst_messages, model="phi3", use_knowledge=False):
+		q = lst_messages[-1]["content"]
+		context = self.query(q)
 
-lst_docs , lst_ids , lst_metadata = [] , [] , []
+		if use_knowledge:
+			prompt = "Give the most accurate answer using your knowledge and the folling additional information: \n"+context
+		else:
+			prompt = "Give the most accurate answer using only the folling information: \n"+context
 
-for n,page in enumerate(doc_text):
-    try:
-        title = [v for k,v in title_map.items()
-                 if n in range(int(k.split("-")[0]), int(k.split("-")[1])+1)][0]
-        
-        page = page.replace("Table of Contents","")
-        
-        ## get paragraph
-        for i,p in enumerate(page.split('\n\n')):
-            if len(p.strip())>5:  ##<--clean paragraph
-                lst_docs.append(p.strip())
-                lst_ids.append(str(n)+"_"+str(i))
-                lst_metadata.append({"title":title})
-    except:
-        continue
-   
-# for id,doc,meta in zip(lst_ids[375:378], 
-#                        lst_docs[375:378], 
-#                        lst_metadata[375:378]):
-#     print(id, "-", meta, "\n", doc, "\n") 
-    
-    
+		res_ai = ollama.chat(model=model, 
+							 messages=[{"role":"system", "content":prompt}]+lst_messages,
+                  			 stream=True)
+		for res in res_ai:
+			chunk = res["message"]["content"]
+			app["full_response"] += chunk
+			yield chunk
 
-    
-
-def keyword_generator(p, top=3):
-    prompt = "summarize the following paragraph in 3 keywords separated by ,: "+p
-    res = ollama.generate(model="phi3", prompt=prompt)["response"]
-    return res.replace("\n"," ").strip()
+ai = AI()
 
 
-## test
-p = '''Professional artists, architects and designers use NVIDIA partner products accelerated with our GPUs and software platform for a range of creative and design
-use cases, such as creating visual effects in movies or designing buildings and products. In addition, generative Al is expanding the market for our workstation-
-class GPUs, as more enterprise customers develop and deploy Al applications with their data on-premises.'''
-print(keyword_generator(p))
-    
 
+st.title('💬 Write your questions')
+st.sidebar.title("Chat History")
+app = st.session_state
+
+if "messages" not in app:
+    app["messages"] = [{"role":"assistant", "content":"I'm ready to retrieve information"}]
+
+if 'history' not in app:
+    app['history'] = []
+
+if 'full_response' not in app:
+    app['full_response'] = '' 
+
+
+for msg in app["messages"]:
+    if msg["role"] == "user":
+        st.chat_message(msg["role"], avatar="😎").write(msg["content"])
+    elif msg["role"] == "assistant":
+        st.chat_message(msg["role"], avatar="👾").write(msg["content"])
+
+
+if txt := st.chat_input():
+    ### User writes
+    app["messages"].append({"role":"user", "content":txt})
+    st.chat_message("user", avatar="😎").write(txt)
+
+    ### AI responds with chat stream
+    app["full_response"] = ""
+    st.chat_message("assistant", avatar="👾").write_stream( ai.respond(app["messages"]) )
+    app["messages"].append({"role":"assistant", "content":app["full_response"]})
     
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
+    ### Show sidebar history
+    app['history'].append("😎: "+txt)
+    app['history'].append("👾: "+app["full_response"])
+    st.sidebar.markdown("<br />".join(app['history'])+"<br /><br />", unsafe_allow_html=True)
+
+
+# app example
+# {'history': ['😎: how much is the revenue?', 
+#              '👾: The total revenue reported in the given information is 60million'], 
+#
+#  'messages': [{'role':'assistant', 'content':'I'm ready to retrieve information'}, 
+#               {'role':'user', 'content':'how much is the revenue?'}, 
+#               {'role':'assistant', 'content':'The total revenue reported in the given information is 60million'}], 
+#
+#  'full_response': 'The total revenue reported in the given information is 60million'}
